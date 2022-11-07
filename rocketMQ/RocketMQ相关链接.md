@@ -16,8 +16,6 @@
 - [RocketMQ之十：RocketMQ消息接收源码](https://www.cnblogs.com/duanxz/p/4706352.html)
 
 
-
-
 ## 其他
 
 - [RocketMq常见面试题](https://blog.csdn.net/qq_42877546/article/details/125425061) 
