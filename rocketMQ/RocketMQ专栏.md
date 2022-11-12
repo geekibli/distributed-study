@@ -151,6 +151,8 @@ RAID 主要利用镜像、数据条带和数据校验三种技术来获取高性
 
 ## [10.RocketMQ工作原理之消息生产及存储](https://blog.csdn.net/qq_33333654/article/details/126263247)
 
+![](https://oscimg.oschina.net/oscnet/up-226ff0d0fc2e343296317fbbbbd1c1b5d3a.png)
+
 
 ### 消息生产过程
 
@@ -685,6 +687,10 @@ commitlog文件存在一个过期时间，默认为72小时，即三天。除了
 - [两万字、三十图、二十三问，搞定RocketMQ!](https://juejin.cn/post/7083848490379378702)
 
 
+
+## 课程链接
+- [【尚硅谷】RocketMQ教程丨深度掌握MQ消息中间件](https://www.bilibili.com/video/BV1cf4y157sz?p=1&vd_source=3ff1db20d26ee8426355e893ae553d51)
+- [1天刷完面试核心45问消息队列面试题（Kafka&RabbitMQ&RocketMQ）](https://www.bilibili.com/video/BV1hP4y1Y7W1/?vd_source=3ff1db20d26ee8426355e893ae553d51)
 
 
 
