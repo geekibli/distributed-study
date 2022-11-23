@@ -782,6 +782,9 @@ Broker内部有⼀个延迟消息服务类ScheuleMessageService，其会消费SC
 > 这其实就是一次**普通消息发送**。只不过这次的消息Producer是延迟消息服务类ScheuleMessageService。
 
 
+## [RocketMQ应用之事务消息](https://blog.csdn.net/qq_33333654/article/details/126480488)
+
+
 
 
 
