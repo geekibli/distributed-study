@@ -782,10 +782,246 @@ Broker内部有⼀个延迟消息服务类ScheuleMessageService，其会消费SC
 > 这其实就是一次**普通消息发送**。只不过这次的消息Producer是延迟消息服务类ScheuleMessageService。
 
 
-## [RocketMQ应用之事务消息](https://blog.csdn.net/qq_33333654/article/details/126480488)
+## [21.RocketMQ应用之事务消息](https://blog.csdn.net/qq_33333654/article/details/126480488)
+
+
+对于分布式事务，通俗地说就是，一次操作由若干分支操作组成，这些分支操作分属不同应用，分布在不同服务器上。分布式事务需要保证这些分支操作要么全部成功，要么全部失败。分布式事务与普通事务一样，就是为了保证操作结果的一致性。
+
+分布式事务可以参照 👉 [链接](https://github.com/geekibli/distributed-study/tree/main/%E5%88%86%E5%B8%83%E5%BC%8F%E4%BA%8B%E5%8A%A1)
+
+
+### 21.1 RocketMQ中的消息回查设置
+
+关于消息回查，有三个常见的属性设置。它们都在broker加载的配置文件中设置，例如：
+
+- transactionTimeout=20，指定TM在20秒内应将最终确认状态发送给TC，否则引发消息回查。默认为60秒
+- transactionCheckMax=5，指定最多回查5次，超过后将丢弃消息并记录错误日志。默认15次。
+- transactionCheckInterval=10，指定设置的多次消息回查的时间间隔为10秒。默认为60秒。
 
 
 
+## [22.RocketMQ应用之批量消息](https://blog.csdn.net/qq_33333654/article/details/126509990)
+
+
+## [23.RocketMQ应用之消息过滤](https://blog.csdn.net/qq_33333654/article/details/126520624)
+
+## [24.RocketMQ应用之消息发送重试机制](https://blog.csdn.net/qq_33333654/article/details/126525629)
+
+
+### 24.1 消息发送重试机制
+
+Producer对发送失败的消息进行重新发送的机制，称为消息发送重试机制，也称为消息重投机制。
+
+对于消息重投，需要注意以下几点：
+
+1. 生产者在发送消息时，若采用同步或异步发送方式，发送失败会重试，但oneway消息发送方式发送失败是没有重试机制的
+2. 只有普通消息具有发送重试机制，顺序消息是没有的
+3. 消息重投机制可以保证消息尽可能发送成功、不丢失，但可能会造成消息重复。消息重复在RocketMQ中是无法避免的问题
+4. 消息重复在一般情况下不会发生，当出现消息量大、网络抖动，消息重复就会成为大概率事件
+5. producer主动重发、consumer负载变化（发生Rebalance，不会导致消息重复，但可能出现重复消费）也会导致重复消息
+6. 消息重复无法避免，但要避免消息的重复消费。
+
+避免消息重复消费的解决方案是，为消息添加唯一标识（例如消息key），使消费者对消息进行消费判断来避免重复消费
+
+消息发送重试有三种策略可以选择：同步发送失败策略、异步发送失败策略、消息刷盘失败策略
+
+
+### 24.2 同步发送失败策略
+
+对于普通消息，消息发送默认采用**round-robin**策略来选择所发送到的队列。如果发送失败，默认重试2次。但在重试时是不会选择上次发送失败的Broker，而是选择其它Broker。当然，若只有一个Broker其也只能发送到该Broker，但其会尽量发送到该Broker上的其它Queue。
+
+
+同时，Broker还具有失败隔离功能，使Producer尽量选择未发生过发送失败的Broker作为目标Broker。其可以保证其它消息尽量不发送到问题Broker，为了提升消息发送效率，降低消息发送耗时。
+
+
+#### 24.2.1 思考：让我们自己实现失败隔离功能，如何来做？
+
+
+**方案一**：Producer中维护某JUC的Map集合，其key是发生失败的时间戳，value为Broker实例。Producer中还维护着一个Set集合，其中存放着所有未发生发送异常的Broker实例。选择目标Broker是从该Set集合中选择的。再定义一个定时任务，定期从Map集合中将长期未发生发送异常的Broker清理出去，并添加到Set集合。  
+
+
+**方案二**：为Producer中的Broker实例添加一个标识，例如是一个AtomicBoolean属性。只要该Broker上发生过发送异常，就将其置为true。选择目标Broker就是选择该属性值为false的Broker。再定义一个定时任务，定期将Broker的该属性置为false。
+
+
+**方案三**：为Producer中的Broker实例添加一个标识，例如是一个AtomicLong属性。只要该Broker上发生过发送异常，就使其值增一。选择目标Broker就是选择该属性值最小的Broker。若该值相同，采用轮询方式选择。
+
+如果超过重试次数，则抛出异常，由Producer去保证消息不丢。当然当生产者出现RemotingException、MQClientException和MQBrokerException时，Producer会自动重投消息。
+
+
+### 24.3 异步发送失败策略
+
+异步发送失败重试时，异步重试不会选择其他broker，仅在同一个broker上做重试，所以该策略无法保证消息不丢。
+
+```java
+DefaultMQProducer producer = new DefaultMQProducer("pg");
+producer.setNamesrvAddr("rocketmqOS:9876");
+// 指定异步发送失败后不进行重试发送
+producer.setRetryTimesWhenSendAsyncFailed(0); // true
+```
+
+
+### 24.4 消息刷盘失败策略
+消息刷盘超时（Master或Slave）或slave不可用（slave在做数据同步时向master返回状态不是SEND_OK）时，默认是不会将消息尝试发送到其他Broker的。不过，对于重要消息可以通过在Broker的配置文件设置`retryAnotherBrokerWhenNotStoreOK`属性为true来开启。
+
+
+
+## [25.RocketMQ应用之消息消费重试机制](https://blog.csdn.net/qq_33333654/article/details/126527152)
+
+
+
+### 25.1 顺序消息的消费重试
+
+对于顺序消息，当Consumer消费消息失败后，为了保证消息的顺序性，其会自动不断地进行消息重试，直到消费成功。消费重试默认间隔时间为1000毫秒。**重试期间应用会出现消息消费被阻塞的情况。**
+
+
+```java
+DefaultMQPushConsumer consumer = new DefaultMQPushConsumer("cg");
+// 顺序消息消费失败的消费重试时间间隔，单位毫秒，默认为1000，其取值范围为[10,30000]
+consumer.setSuspendCurrentQueueTimeMillis(100);
+```
+
+由于对顺序消息的重试是无休止的，不间断的，直至消费成功，所以，对于顺序消息的消费，务必要保证应用能够及时监控并处理消费失败的情况，避免消费被永久性阻塞。
+
+
+> **注意，顺序消息没有发送失败重试机制，但具有消费失败重试机制**
+
+
+### 25.2 无序消息的消费重试
+
+对于无序消息（普通消息、延时消息、事务消息），当Consumer消费消息失败时，可以通过设置返回状态达到消息重试的效果。不过需要注意，无序消息的重试只对**集群消费**方式生效，**广播消费方式不提供失败重试特性**。即对于广播消费，消费失败后，失败消息不再重试，继续消费后续消息。
+
+
+
+### 25.3 消费重试次数与间隔
+
+对于无序消息集群消费下的重试消费，每条消息默认最多重试16次，但每次重试的间隔时间是不同的，会逐渐变长.  
+
+若一条消息在一直消费失败的前提下，将会在正常消费后的第4小时46分后进行第16次重试。若仍然失败，则将消息投递到死信队列
+
+
+**修改重复消费的次数**
+
+```java
+DefaultMQPushConsumer consumer = new DefaultMQPushConsumer("cg");
+// 修改消费重试次数
+consumer.setMaxReconsumeTimes(10);
+```
+
+对于修改过的重试次数，将按照以下策略执行：
+
+- 若修改值小于16，则按照指定间隔进行重试
+- 若修改值大于16，则超过16次的重试时间间隔均为2小时
+
+> 对于Consumer Group，若仅修改了一个Consumer的消费重试次数，则会应用到该Group中所有其它Consumer实例。若出现多个Consumer均做了修改的情况，则采用覆盖方式生效。即最后被修改的值会覆盖前面设置的值。
+
+
+
+### 25.4 重试队列
+
+
+对于需要重试消费的消息，并不是Consumer在等待了指定时长后再次去拉取原来的消息进行消费，而是将这些需要重试消费的消息放入到了一个特殊Topic的队列中，而后进行再次消费的。这个特殊的队列就是**重试队列**。
+
+当出现需要进行重试消费的消息时，Broker会为**每个消费组**都设置一个Topic名称为%RETRY%consumerGroup@consumerGroup 的重试队列。
+
+
+> 
+- 这个重试队列是针对消息才组的，而不是针对每个Topic设置的（一个Topic的消息可以让多个消费者组进行消费，所以会为这些消费者组各创建一个重试队列）
+- 只有当出现需要进行重试消费的消息时，才会为该消费者组创建重试队列。
+
+
+**注意，消费重试的时间间隔与延时消费的延时等级十分相似，除了没有延时等级的前两个时间外，其它的时间都是相同的**
+
+**Broker对于重试消息的处理是通过延时消息实现的**。先将消息保存到SCHEDULE_TOPIC_XXXX延迟队列中，延迟时间到后，会将消息投递到%RETRY%consumerGroup@consumerGroup重试队列中。
+
+
+集群消费方式下，消息消费失败后若希望消费重试，则需要在消息监听器接口的实现中明确进行如下三种方式之一的配置：
+
+方式1：返回ConsumeConcurrentlyStatus.RECONSUME_LATER（**推荐**）。  
+方式2：返回Null  
+方式3：抛出异常  
+
+
+集群消费方式下，消息消费失败后若不希望消费重试，则在捕获到异常后同样也返回与消费成功后的相同的结果，即**ConsumeConcurrentlyStatus.CONSUME_SUCCESS**，则不进行消费重试。
+
+
+## [26.RocketMQ应用之死信队列](https://blog.csdn.net/qq_33333654/article/details/126538081)
+
+
+
+### 26.1 什么是死信队列
+
+
+当一条消息初次消费失败，消息队列会自动进行消费重试；达到最大重试次数后，若消费依然失败，则表明消费者在正常情况下无法正确地消费该消息，此时，消息队列不会立刻将消息丢弃，而是将其发送到该消费者对应的特殊队列中。这个队列就是死信队列（Dead-Letter Queue，DLQ），而其中的消息则称为死信消息（Dead-Letter Message，DLM）。
+
+**死信队列是用于处理无法被正常消费的消息的。**
+
+
+
+### 26.2 死信队列的特征
+
+- 死信队列中的消息不会再被消费者正常消费，即DLQ对于消费者是不可见的
+- 死信存储有效期与正常消息相同，均为 3 天（commitlog文件的过期时间），3 天后会被自动删除
+- 死信队列就是一个特殊的Topic，名称为%DLQ%consumerGroup@consumerGroup ，即**每个消费者组都有一个死信队列**
+- 如果⼀个消费者组未产生死信消息，则不会为其创建相应的死信队列
+
+
+
+### 26.3 死信队列的处理
+
+实际上，当⼀条消息进入死信队列，就意味着系统中某些地方出现了问题，从而导致消费者无法正常消费该消息，比如代码中原本就存在Bug。因此，对于死信消息，通常需要开发人员进行特殊处理。最关键的步骤是要排查可疑因素，解决代码中可能存在的Bug，然后再将原来的死信消息再次进行投递消费。
+
+
+## [27.RocketMQ 消费幂等](https://blog.csdn.net/qq_33333654/article/details/127423245)
+
+
+### 27.1 什么是消息幂等
+如果有⼀个操作，多次执⾏与⼀次执⾏所产⽣的影响是相同的，我们就称这个操作是幂等的。
+当出现消费者对某条消息重复消费的情况时，重复消费的结果与消费⼀次的结果是相同的，并且多次消费并未对业务系统产⽣任何负⾯影响，那么这整个过程就可实现消息幂等。
+
+
+### 27.2 消息重复的场景有哪些
+
+
+- 发送时消息重复
+- 消费消息时，ack失败，再次重试消费
+- 负载均衡时消息重复（包括但不限于⽹络抖动、Broker 重启以及消费者应⽤重启）
+
+
+### 27.3 消费端常⻅的幂等操作
+
+
+#### 27.3.1 业务操作之前进⾏状态查询
+
+消费端开始执⾏业务操作时，通过幂等id⾸先进⾏业务状态的查询，如：修改订单状态环节，当订单状态为成功/失败则不需要再进⾏处理。那么我们只需要在消费逻辑执⾏之前通过订单号进⾏订单状态查询，⼀旦获取到确定的订单状态则对消息进⾏提交，通知broker消息状态为：ConsumeConcurrentlyStatus.CONSUME_SUCCESS 。
+
+
+#### 27.3.2 唯⼀性约束保证最后⼀道防线
+
+上述第⼆点操作并不能保证⼀定不出现重复的数据，如：并发插⼊的场景下，如果没有乐观锁、分布式锁作为保证的前提下，很有可能出现数据的重复插⼊操作，因此我们务必要对幂等id添加唯⼀性索引，这样就能够保证在并发场景下也能保证数据的唯⼀性。
+
+#### 27.3.3 引⼊锁机制
+
+上述的第⼀点中，如果是并发更新的情况，没有使⽤悲观锁、乐观锁、分布式锁等机制的前提下，进⾏更新，很可能会出现多次更新导致状态的不准确。如：对订单状态的更新，业务要求订单只能从初始化->处理中，处理中->成功，处理中->失败，不允许跨状态更新。
+
+如果没有锁机制，很可能会将初始化的订单更新为成功，成功订单更新为失败等异常的情况。⾼并发下，建议通过**状态机**的⽅式定义好业务状态的变迁，通过乐观锁、分布式锁机制保证多次更新的结果是确定的，悲观锁在并发环境不利于业务吞吐量的提⾼因此不建议使⽤。
+
+
+
+## [28.RocketMQ 消息查询](https://blog.csdn.net/qq_33333654/article/details/127424326)
+
+
+
+
+
+#### 28.1 消息查询方式
+
+
+
+**Message Key 查询**：消息的key是业务开发在发送消息之前⾃⾏指定的，通常会把具有业务含义，区分度⾼的字段作为消息的key，如⽤户id，订单id等。
+
+**Unique Key查询**：除了业务开发明确的指定消息中的key，RocketMQ⽣产者客户端在发送发送消息之前，会⾃动⽣成⼀个UNIQ_KEY，设置到消息的属性中，从逻辑上唯⼀代表⼀条消息。
+
+**Message Id 查询**：Message Id 是消息发送后，在Broker端⽣成的，其包含了Broker的地址，和在CommitLog中的偏移信息，并会将Message Id作为发送结果的⼀部分进⾏返回。Message Id中属于精确匹配，可以唯⼀定位⼀条消息，不需要使⽤哈希索引机制，查询效率更⾼。
 
 
 
@@ -808,6 +1044,17 @@ Broker内部有⼀个延迟消息服务类ScheuleMessageService，其会消费SC
 
 
 
+## 博客园
+
+- [RocketMQ之一：RocketMQ介绍](https://www.cnblogs.com/weifeng1463/p/12889300.html)  
+- [RocketMQ之二：分布式开放消息系统RocketMQ的原理与实践（消息的顺序问题、重复问题、可靠消息/事务消息）](https://www.cnblogs.com/duanxz/p/6053598.html)
+- [RocketMQ之三：NameServier代码结构](https://www.cnblogs.com/duanxz/p/5081547.html)  
+- [RocketMQ之四：RocketMq事务消息 ](https://www.cnblogs.com/duanxz/p/5063377.html)
+- [RocketMQ之六：RocketMQ消息存储 ](https://www.cnblogs.com/duanxz/p/5020398.html)
+- [RocketMQ之七：RocketMQ管理与监控](https://www.cnblogs.com/duanxz/p/3890046.html)
+- [RocketMQ之八：重试队列，死信队列，消息轨迹](https://www.cnblogs.com/duanxz/p/3896994.html)
+- [RocketMQ之九：RocketMQ消息发送流程解读](https://www.cnblogs.com/duanxz/p/4707107.html)
+- [RocketMQ之十：RocketMQ消息接收源码](https://www.cnblogs.com/duanxz/p/4706352.html)
 
 
 
